@@ -138,7 +138,7 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
+
   pte = walk(kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
@@ -301,6 +301,51 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+static void
+print_indent(int count)
+{
+  for(int j = 0; j < count; j++){
+    printf("  ");
+  }
+}
+
+static void
+vmprint_recur(pagetable_t pagetable, int level)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)){
+      print_indent(level);
+      uint64 pa = PTE2PA(pte);
+      printf("%d: pa %p", i, pa);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.
+        printf(" {\n");
+        vmprint_recur((pagetable_t)pa, level + 1);
+        print_indent(level);
+        printf("}");
+      } else {
+        printf(" ");
+        printf(pte & PTE_U ? "U" : "_");
+        printf(pte & PTE_X ? "X" : "_");
+        printf(pte & PTE_W ? "W" : "_");
+        printf(pte & PTE_R ? "R" : "_");
+        printf(pte & PTE_V ? "V" : "_");
+      }
+      printf("\n");
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p {\n", pagetable);
+  vmprint_recur(pagetable, 1);
+  printf("}\n");
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
@@ -322,7 +367,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+//  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -331,19 +376,22 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+//    if((mem = kalloc()) == 0)
+//      goto err;
+//    memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, pa, flags ^ PTE_W) != 0){
+      panic("uvmcopy: couldn't map new pages");
     }
+//    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+//      kfree(mem);
+//      goto err;
+//    }
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i, 1);
-  return -1;
+// err:
+//  uvmunmap(new, 0, i, 1);
+//  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -352,7 +400,7 @@ void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  
+
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("uvmclear");

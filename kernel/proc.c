@@ -256,12 +256,17 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
+  printf("fork, parent pagetable:\n");
+  vmprint(p->pagetable);
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+
   np->sz = p->sz;
+  printf("child pagetable:\n");
+  vmprint(np->pagetable);
 
   np->parent = p;
 
@@ -282,7 +287,6 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
-
   release(&np->lock);
 
   return pid;
