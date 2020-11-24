@@ -261,8 +261,8 @@ fork(void)
     release(&np->lock);
     return -1;
   }
-
   np->sz = p->sz;
+
   np->parent = p;
 
   // copy saved user registers.
@@ -282,6 +282,7 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
   release(&np->lock);
 
   return pid;
