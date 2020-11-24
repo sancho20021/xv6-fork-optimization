@@ -13,6 +13,7 @@ void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+extern int pages_refs[]; // ref counting array for pages
 
 struct run {
   struct run *next;

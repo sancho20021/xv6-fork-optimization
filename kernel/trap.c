@@ -11,6 +11,9 @@ uint ticks;
 
 extern char trampoline[], uservec[], userret[];
 
+extern uint32 pages_refs[];
+extern struct spinlock ref_lock;
+
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
 
@@ -67,7 +70,43 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 13 || r_scause() == 15){
+    acquire(&ref_lock);
+    uint64 pa;
+    uint flags;
+    pte_t *pte;
+    uint64 va = PGROUNDDOWN(r_stval());
+    if((pte = walk(p->pagetable, va, 0)) == 0){
+      goto err;
+    }
+    pa = PTE2PA(*pte);
+
+    printf("\nusertrap %d, pa = %p, current pagetable: \n", r_scause(), pa);
+    vmprint(p->pagetable);
+
+    flags = PTE_FLAGS(*pte);
+    if((flags & PTE_B) == 0 || pages_refs[INDEX_IN_REFS(pa)] == 0) {
+      goto err;
+    }
+    char *mem;
+    if(pages_refs[INDEX_IN_REFS(pa)]-- == 1){
+      *pte = (*pte & (~PTE_B)) | PTE_W;
+    } else {
+      if((mem = kalloc()) == 0)
+        goto err;
+      memmove(mem, (char *) pa, PGSIZE);
+      flags = PTE_W | (flags & (~PTE_B));
+      *pte = PA2PTE((uint64) mem) | flags;
+    }
+
+    printf("\nusertrap %d handled, new pa = %p, new pagetable: \n", r_scause(), PTE2PA(*pte));
+    vmprint(p->pagetable);
+    printf("\n");
+
+    release(&ref_lock);
+    return;
+  } else{
+    err:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

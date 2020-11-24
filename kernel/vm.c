@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +15,9 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+uint32 pages_refs[(PHYSTOP-KERNBASE)/PGSIZE];
+struct spinlock ref_lock; // lock for working with ref table
 
 void print(pagetable_t);
 
@@ -75,7 +79,7 @@ kvminithart()
 //   21..39 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..12 -- 12 bits of byte offset within the page.
-static pte_t *
+pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
   if(va >= MAXVA)
@@ -197,7 +201,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 size, int do_free)
       panic("uvmunmap: not a leaf");
     if(do_free){
       pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      free_cow_page(pa);
     }
     *pte = 0;
     if(a == last)
@@ -226,6 +230,8 @@ void
 uvminit(pagetable_t pagetable, uchar *src, uint sz)
 {
   char *mem;
+
+  initlock(&ref_lock, "ref lock");
 
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
@@ -309,6 +315,18 @@ print_indent(int count)
   }
 }
 
+void
+print_flags(pte_t pte)
+{
+  printf(" ");
+  printf(pte & PTE_B ? "B" : "_");
+  printf(pte & PTE_U ? "U" : "_");
+  printf(pte & PTE_X ? "X" : "_");
+  printf(pte & PTE_W ? "W" : "_");
+  printf(pte & PTE_R ? "R" : "_");
+  printf(pte & PTE_V ? "V" : "_");
+}
+
 static void
 vmprint_recur(pagetable_t pagetable, int level)
 {
@@ -326,12 +344,7 @@ vmprint_recur(pagetable_t pagetable, int level)
         print_indent(level);
         printf("}");
       } else {
-        printf(" ");
-        printf(pte & PTE_U ? "U" : "_");
-        printf(pte & PTE_X ? "X" : "_");
-        printf(pte & PTE_W ? "W" : "_");
-        printf(pte & PTE_R ? "R" : "_");
-        printf(pte & PTE_V ? "V" : "_");
+        print_flags(pte);
       }
       printf("\n");
     }
@@ -367,7 +380,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-//  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -375,23 +387,28 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-//    if((mem = kalloc()) == 0)
-//      goto err;
-//    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, pa, flags ^ PTE_W) != 0){
-      panic("uvmcopy: couldn't map new pages");
+    if((*pte & PTE_W) && (*pte & PTE_B)){
+      panic("uvmcopy: shared, but not read-only page");
     }
-//    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-//      kfree(mem);
-//      goto err;
-//    }
+    if(*pte & (PTE_W | PTE_B)){
+      *pte |= PTE_B;
+    }
+    *pte &= (~PTE_W);
+
+    acquire(&ref_lock);
+    pages_refs[INDEX_IN_REFS(pa)]++;
+    if(pages_refs[INDEX_IN_REFS(pa)] == 1){
+      pages_refs[INDEX_IN_REFS(pa)]++;
+    }
+    release(&ref_lock);
+
+    flags = PTE_FLAGS(*pte);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      uvmunmap(new, 0, i, 1);
+      return -1;
+    }
   }
   return 0;
-
-// err:
-//  uvmunmap(new, 0, i, 1);
-//  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -497,5 +514,16 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void free_cow_page(uint64 pa)
+{
+  uint32 index = INDEX_IN_REFS(pa);
+  printf("cow page %p freed (from uvmunmap), current refcount = %d\n", pa, pages_refs[index]);
+  pages_refs[index]--;
+  if(pages_refs[index] == 0){
+    kfree((void *)pa);
+    printf("cow page led to kfree\n\n");
   }
 }
