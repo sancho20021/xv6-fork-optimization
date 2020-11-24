@@ -71,22 +71,22 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else if(r_scause() == 13 || r_scause() == 15){
-    // acquire(&ref_lock);
-    uint64 pa;
     pte_t *pte;
+    int success = 0;
     uint64 va = PGROUNDDOWN(r_stval());
-    if((pte = walk(p->pagetable, va, 0)) == 0){
-      goto err;
+    if((pte = walk(p->pagetable, va, 0)) > 0){
+      if((*pte & PTE_B) != 0){
+        if(unshare(pte) == 0){
+          success = 1;
+        }
+      }
     }
-    pa = PTE2PA(*pte);
-    if((*pte & PTE_B) == 0 || pages_refs[INDEX_IN_REFS(pa)] == 0){
-      goto err;
+    if(success == 0){
+      printf("usertrap(): page fault pid = %d\n", p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
     }
-    if(unshare(pte) == -1)
-      goto err;;
-    // release(&ref_lock);
   } else{
-    err:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
