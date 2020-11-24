@@ -263,12 +263,6 @@ fork(void)
   }
 
   np->sz = p->sz;
-
-  printf("fork, parent pagetable:\n");
-  vmprint(p->pagetable);
-  printf("child pagetable:\n");
-  vmprint(np->pagetable);
-
   np->parent = p;
 
   // copy saved user registers.

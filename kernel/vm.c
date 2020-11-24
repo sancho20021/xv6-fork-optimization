@@ -395,12 +395,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     }
     *pte &= (~PTE_W);
 
-    acquire(&ref_lock);
+    // acquire(&ref_lock);
     pages_refs[INDEX_IN_REFS(pa)]++;
     if(pages_refs[INDEX_IN_REFS(pa)] == 1){
       pages_refs[INDEX_IN_REFS(pa)]++;
     }
-    release(&ref_lock);
+    // release(&ref_lock);
 
     flags = PTE_FLAGS(*pte);
     if(mappages(new, i, PGSIZE, pa, flags) != 0){
@@ -431,15 +431,24 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
+    if(dstva > MAXVA){
+      return -1;
+    }
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
+    // acquire(&ref_lock);
+    if(unshare(pte) == -1)
+      return -1;
+    // release(&ref_lock);
+    pa0 = PTE2PA(*pte);
     memmove((void *)(pa0 + (dstva - va0)), src, n);
 
     len -= n;
@@ -517,13 +526,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-void free_cow_page(uint64 pa)
+void free_cow_page(uint64 pa) // free user page
 {
   uint32 index = INDEX_IN_REFS(pa);
-  printf("cow page %p freed (from uvmunmap), current refcount = %d\n", pa, pages_refs[index]);
-  pages_refs[index]--;
+  if(pages_refs[index]>0) // this is shared page
+    pages_refs[index]--;
   if(pages_refs[index] == 0){
     kfree((void *)pa);
-    printf("cow page led to kfree\n\n");
   }
+}
+
+// unshare user page. Returns 0 on success
+// ref_lock must be acquired
+int
+unshare(pte_t* pte)
+{
+  if((*pte & PTE_V) == 0){
+    return -1;
+  }
+  uint64 pa = PTE2PA(*pte);
+  uint flags = PTE_FLAGS(*pte);
+
+  uint new_flags = flags & (~PTE_B);
+  if(flags & PTE_B){
+    new_flags |= PTE_W;
+  }
+  char *mem;
+  if(pages_refs[INDEX_IN_REFS(pa)] > 0){ // shared page
+    if(pages_refs[INDEX_IN_REFS(pa)]-- == 1){
+      *pte = PA2PTE(pa) | new_flags;
+    } else {
+      if((mem = kalloc()) == 0){ // kalloc failed
+        return -1;
+      }
+      memmove(mem, (char *) pa, PGSIZE);
+      *pte = PA2PTE((uint64) mem) | new_flags;
+    }
+  }
+  return 0;
 }

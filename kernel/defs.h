@@ -175,6 +175,7 @@ void            vmprint(pagetable_t);
 pte_t *         walk(pagetable_t, uint64, int);
 void            print_flags(pte_t pte);
 void            free_cow_page(uint64);
+int             unshare(pte_t* pte);
 
 // plic.c
 void            plicinit(void);
